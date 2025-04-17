@@ -1,8 +1,9 @@
+import { unauthorized } from "next/navigation";
 import { NextRequest } from "next/server";
 import { z } from "zod";
 
-import { changeRole, deleteProfile, ServiceError } from "@/lib/server/service";
-import { requireAdminContextFromRequest } from "@/lib/server/utils";
+import { changeRole, deleteProfile, isProfileDeleteAllowed, ServiceError } from "@/lib/server/service";
+import { requireAdminContextFromRequest, requireAuthContextFromRequest } from "@/lib/server/utils";
 
 type Params = Promise<{ id: string }>;
 
@@ -14,15 +15,15 @@ function unwrap(e: unknown): Error {
 function renderError(e: unknown) {
   const err = unwrap(e);
   const message = err instanceof ServiceError ? err.message : "Unexpected error";
-  return new Response(JSON.stringify({ error: err.message }), { status: 500 });
+  return new Response(JSON.stringify({ error: message }), { status: 500 });
 }
 
 export async function DELETE(request: NextRequest, { params }: { params: Params }) {
-  const { tenant } = await requireAdminContextFromRequest(request);
+  const { profile, tenant } = await requireAuthContextFromRequest(request);
   const { id } = await params;
 
   try {
-    await deleteProfile(tenant.id, id);
+    await deleteProfile(tenant.id, id, profile);
   } catch (e) {
     return renderError(e);
   }

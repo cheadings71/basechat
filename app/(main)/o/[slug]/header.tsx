@@ -4,6 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ReactNode, useEffect, useState } from "react";
+import { toast } from "sonner";
 import { z } from "zod";
 
 import Logo from "@/components/tenant/logo/logo";
@@ -14,12 +15,18 @@ import { getSignInPath, getSignUpPath, getTenantPath } from "@/lib/paths";
 import { cn } from "@/lib/utils";
 import AnonProfileIcon from "@/public/icons/anonymous-profile.svg";
 import CheckIcon from "@/public/icons/check.svg";
+import EllipsesIcon from "@/public/icons/ellipses.svg";
 import HamburgerIcon from "@/public/icons/hamburger.svg";
 import LogOutIcon from "@/public/icons/log-out.svg";
 import NewChatIcon from "@/public/icons/new-chat.svg";
 import PlusIcon from "@/public/icons/plus.svg";
 
 import ConversationHistory from "./conversation-history";
+
+const errorSchema = z.object({
+  error: z.string(),
+});
+
 interface Props {
   tenant: {
     name?: string | null;
@@ -46,6 +53,18 @@ const HeaderPopoverContent = ({
   <PopoverContent
     align={align}
     className={cn("bg-[#F5F5F7] w-[258px] border-none shadow-none rounded-[24px] p-6", className)}
+  >
+    {children}
+  </PopoverContent>
+);
+
+const TenantPopoverContent = ({ children }: { children: React.ReactNode }) => (
+  <PopoverContent
+    align="end"
+    alignOffset={-60}
+    side="right"
+    sideOffset={-20}
+    className={cn("bg-[#F5F5F7] w-[120px] border border-[#D7D7D7] shadow-none rounded-[6px] mt-2 p-3")}
   >
     {children}
   </PopoverContent>
@@ -130,7 +149,7 @@ export default function Header({ isAnonymous, tenant, name, email, onNavClick = 
                 {tenants.map((tenantItem, i) => (
                   <li
                     key={i}
-                    className="hover:bg-black hover:bg-opacity-5 px-4 py-3 rounded-lg cursor-pointer"
+                    className="hover:bg-black hover:bg-opacity-5 px-4 py-3 rounded-lg cursor-pointer group"
                     onClick={() => handleProfileClick(tenantItem)}
                   >
                     <div className="flex items-center mb-1">
@@ -145,12 +164,75 @@ export default function Header({ isAnonymous, tenant, name, email, onNavClick = 
                         className="ml-3 text-[16px] w-[40px] h-[40px]"
                         tenantId={tenantItem.id}
                       />
-                      <div className="ml-4">
+                      <div className="ml-4 flex-1">
                         {tenantItem.name}
-                        <div className="text-xs text-gray-500">
+                        <div className="text-xs text-gray-500 flex items-center gap-2">
+                          {tenantItem.profileRole === "admin" && (
+                            <span className="bg-[#989898] text-[#F5F5F7] w-[45px] h-[18px] rounded-[4px] px-1 py-0.5 text-[12px] font-medium flex items-center justify-center">
+                              Admin
+                            </span>
+                          )}
                           {tenantItem.userCount ?? 1} User{(tenantItem.userCount ?? 1) === 1 ? "" : "s"}
                         </div>
                       </div>
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <Image
+                            src={EllipsesIcon}
+                            height={16}
+                            width={16}
+                            alt="Options"
+                            className={cn(
+                              "flex-shrink-0 cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity",
+                              tenantItem.lastAdmin && "opacity-0 cursor-not-allowed",
+                            )}
+                            onClick={(e) => e.stopPropagation()}
+                          />
+                        </PopoverTrigger>
+                        {!tenantItem.lastAdmin && (
+                          <TenantPopoverContent>
+                            <button
+                              className="text-sm text-black hover:text-gray-700"
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                const res = await fetch(`/api/profiles/${tenantItem.profileId}`, {
+                                  method: "DELETE",
+                                  headers: { tenant: tenantItem.slug },
+                                });
+                                if (!res.ok) {
+                                  try {
+                                    const payload = errorSchema.parse(await res.json());
+                                    toast.error(`Error: ${payload.error}`);
+                                  } catch (e) {
+                                    toast.error(`Error: ${res.statusText || "An unexpected error occurred"}`);
+                                  }
+                                  return;
+                                }
+                                toast.info("Left chatbot");
+                                // Find a new tenant to switch to
+                                const newTenant = tenants.find((t) => t.id !== tenantItem.id);
+                                if (!newTenant) {
+                                  // If no other tenants, go to empty state
+                                  router.push("/empty");
+                                  return;
+                                }
+                                // Set new current tenant and navigate
+                                await fetch("/api/profiles", {
+                                  method: "POST",
+                                  body: JSON.stringify(
+                                    updateCurrentProfileSchema.parse({
+                                      tenantId: newTenant.id,
+                                    }),
+                                  ),
+                                });
+                                router.push(getTenantPath(newTenant.slug));
+                              }}
+                            >
+                              Leave chatbot
+                            </button>
+                          </TenantPopoverContent>
+                        )}
+                      </Popover>
                     </div>
                   </li>
                 ))}

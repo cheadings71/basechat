@@ -113,6 +113,8 @@ export async function saveConnection(tenantId: string, ragieConnectionId: string
     .for("update");
   const connection = qs.length === 1 ? qs[0] : null;
 
+  const lastSyncedAt = status === "ready" ? new Date() : null;
+
   if (!connection) {
     const ragieConnection = await getRagieClient().connections.get({ connectionId: ragieConnectionId });
     await db.insert(schema.connections).values({
@@ -121,11 +123,12 @@ export async function saveConnection(tenantId: string, ragieConnectionId: string
       name: ragieConnection.name,
       status,
       sourceType: ragieConnection.type,
+      lastSyncedAt,
     });
   } else {
     await db
       .update(schema.connections)
-      .set({ status })
+      .set({ status, lastSyncedAt })
       .where(
         and(eq(schema.connections.tenantId, tenantId), eq(schema.connections.ragieConnectionId, ragieConnectionId)),
       );
@@ -257,16 +260,24 @@ export async function acceptInvite(userId: string, inviteId: string) {
 }
 
 export async function getTenantsByUserId(userId: string) {
-  const res = await db
+  const profileInfo = await db
     .select({
       tenantId: schema.profiles.tenantId,
+      profileId: schema.profiles.id,
+      profileRole: schema.profiles.role,
     })
     .from(schema.profiles)
     .where(and(eq(schema.profiles.userId, userId)));
 
-  const tenantIds = res.map((obj) => obj.tenantId);
+  const tenantIds = profileInfo.map((obj) => obj.tenantId);
 
-  return db
+  const tenantIdToProfile = new Map<string, { profileId: string; profileRole: string }>();
+
+  for (const { tenantId, profileId, profileRole } of profileInfo.values()) {
+    tenantIdToProfile.set(tenantId, { profileId, profileRole });
+  }
+
+  const tenantInfo = await db
     .select({
       id: schema.tenants.id,
       userCount: sql<number>`COUNT(*)`.mapWith(Number).as("user_count"),
@@ -278,6 +289,23 @@ export async function getTenantsByUserId(userId: string) {
     .leftJoin(schema.profiles, and(eq(schema.tenants.id, schema.profiles.tenantId), ne(schema.profiles.role, "guest")))
     .where(inArray(schema.tenants.id, tenantIds))
     .groupBy(schema.tenants.id);
+
+  const result = [];
+
+  for (const item of tenantInfo.values()) {
+    const profileInfo = tenantIdToProfile.get(item.id);
+    if (profileInfo === undefined) {
+      continue;
+    }
+
+    const lastAdmin = profileInfo.profileRole === "admin" && (await isLastAdmin(item.id, profileInfo.profileId));
+    result.push({
+      ...profileInfo,
+      ...item,
+      lastAdmin,
+    });
+  }
+  return result;
 }
 
 export async function findTenantBySlug(slug: string) {
@@ -406,18 +434,36 @@ export async function changeRole(tenantId: string, profileId: string, newRole: R
   return await updateProfileRoleById(tenantId, profileId, newRole);
 }
 
-export async function deleteProfile(tenantId: string, profileId: string) {
-  const lastAdmin = await isLastAdmin(tenantId, profileId);
+export async function deleteProfile(
+  tenantId: string,
+  targetProfileId: string,
+  currentProfile: { id: string; role: string },
+) {
+  const lastAdmin = await isLastAdmin(tenantId, targetProfileId);
   if (lastAdmin) {
     throw new ServiceError("Cannot delete the last admin");
   }
-  return await deleteProfileById(tenantId, profileId);
+  const isDeleteAllowed = isProfileDeleteAllowed(currentProfile, targetProfileId);
+  if (!isDeleteAllowed) {
+    throw new ServiceError("Cannot delete profile");
+  }
+  return await deleteProfileById(tenantId, targetProfileId);
 }
 
 async function isLastAdmin(tenantId: string, profileId: string) {
   const admins = await getAdminProfiles(tenantId);
   assert(admins.length > 0, "there must be at least one admin per tenant");
   return admins.length === 1 && admins[0].id === profileId;
+}
+
+export function isProfileDeleteAllowed(currentProfile: { id: string; role: string }, targetProfileId: string): boolean {
+  if (currentProfile.role === "admin") {
+    return true;
+  }
+  if (currentProfile.role === "user" && currentProfile.id === targetProfileId) {
+    return true;
+  }
+  return false;
 }
 
 export async function updateProfileRoleById(tenantId: string, profileId: string, newRole: Role) {
